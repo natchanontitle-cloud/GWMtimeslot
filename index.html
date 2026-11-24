@@ -74,6 +74,7 @@ h3{font-size:15px;margin:18px 0 8px}
 .grid th.x{background:var(--extra-bg);color:var(--extra)}
 .grid td.d{text-align:left;font-weight:500}
 .c{display:inline-block;min-width:34px;padding:3px 0;border-radius:5px;font-weight:600}
+.c-wrong{background:#fef9c3;color:#a16207;outline:1.5px dashed #ca8a04} .b-wrong{background:#fef9c3;color:#a16207} .kpi.wrong .n{color:#ca8a04} .wrong-t{color:#a16207;font-weight:600}
 .c-ok{background:var(--ok-bg);color:var(--ok)} .c-miss{background:var(--miss-bg);color:var(--miss)} .c-extra{background:var(--extra-bg);color:var(--extra)} .c-dup{background:var(--dup);color:#fff}
 .c-err{outline:2px solid var(--err)}
 .c-cap0{background:repeating-linear-gradient(45deg,var(--ok-bg),var(--ok-bg) 4px,#fff 4px,#fff 8px);color:var(--ok)}
@@ -111,6 +112,12 @@ tr.wk td.d{color:var(--muted)}
 .pr .stdbox{font-size:11px;background:#fafafa;border:1px solid #ddd;border-radius:6px;padding:5px 8px;margin:6px 0}
 .pr .ok{color:var(--ok);font-weight:600;font-size:14px;margin:14px 0}
 .pr .chk{width:40px;text-align:center}
+.pr table.grid th,.pr table.grid td{text-align:center;padding:2px 3px;font-size:10px;white-space:nowrap}
+.pr table.grid td.d{text-align:left}
+.pr .grid .c{min-width:22px;padding:1px 0}
+.pr .grid .badge{font-size:9px;padding:1px 5px}
+.pr .legend{display:flex;gap:10px;flex-wrap:wrap;color:#444}
+.pr .legend .sw{width:11px;height:11px;border-radius:3px;display:inline-block;vertical-align:middle;margin-right:3px}
 .pr .foot{margin-top:10px;font-size:11px;color:#444}
 @media (max-width:640px){main{padding:12px} header{padding:12px} input[type=search]{min-width:0;flex:1}}
 </style>
@@ -343,8 +350,12 @@ function analyze(){
   const [y1,m1] = first.split("-").map(Number), [y2,m2] = last.split("-").map(Number);
   const days = [];
   for (let dt = new Date(y1, m1-1, 1); dt <= new Date(y2, m2, 0); dt.setDate(dt.getDate()+1)) days.push({d:dkey(dt), dow:dt.getDay()});
-  const raw = new Map();
+  const raw = new Map(), allAt = new Map();
   for (const r of A.rows){
+    const sn = A.stores[r[0]], dd = A.dates[r[3]];
+    let a1 = allAt.get(sn); if (!a1){ a1 = new Map(); allAt.set(sn, a1); }
+    let a2 = a1.get(dd); if (!a2){ a2 = new Map(); a1.set(dd, a2); }
+    if (!a2.has(r[4])) a2.set(r[4], []); a2.get(r[4]).push([r[1], r[2]]);
     if (r[1] !== svcIdx) continue;
     let s = raw.get(r[0]); if (!s){ s = {days:new Map(), other:0}; raw.set(r[0], s); }
     const ti = typeIdx.indexOf(r[2]);
@@ -353,7 +364,7 @@ function analyze(){
     let day = s.days.get(d); if (!day){ day = stdTypes.map(() => []); s.days.set(d, day); }
     day[ti].push(r);
   }
-  S.result = {stdTypes, exp, days, firstDate:first, lastDate:last, byStore:new Map(), noData:new Map(),
+  S.result = {stdTypes, exp, days, firstDate:first, lastDate:last, byStore:new Map(), noData:new Map(), allAt, svcIdx, typeIdx,
               workDays: days.filter(x => x.dow !== 0).length, perDay: exp.reduce((a,e) => a + e.length, 0)};
   for (const [si, s] of raw) S.result.byStore.set(A.stores[si], evalStore(A.stores[si], s));
   return S.result;
@@ -361,7 +372,8 @@ function analyze(){
 function evalStore(name, s){
   const R = S.result;
   const res = {store:name, hasData:!!s, other:s ? s.other : 0, workDays:R.workDays, openDays:0, okDays:0, missDays:0, miss:0,
-               closedDays:[], sunDays:[], extraTimes:new Map(), extraRows:0, dupTimes:new Map(), dupSlots:0, err:0, issues:[], grid:{}};
+               closedDays:[], sunDays:[], extraTimes:new Map(), extraRows:0, dupTimes:new Map(), dupSlots:0, err:0, wrong:0, wrongKinds:new Map(), issues:[], grid:{}};
+  const at = R.allAt.get(name);
   R.stdTypes.forEach(t => res.grid[t] = {extraCols:new Set(), days:[]});
   for (const day of R.days){
     const byType = s ? s.days.get(day.d) : null, sun = day.dow === 0;
@@ -377,12 +389,20 @@ function evalStore(name, s){
       const miss = [...E].filter(m => !cnt.has(m)).sort((a,b) => a-b);
       const extra = [...cnt.keys()].filter(m => !E.has(m)).sort((a,b) => a-b);
       const dup = [...cnt.entries()].filter(([m,c]) => c > 1).sort((a,b) => a[0]-b[0]);
+      const wrong = new Map();
+      if (at && at.get(day.d)) for (const m of miss){
+        const o = (at.get(day.d).get(m) || []).filter(([v,ty]) => !(v === R.svcIdx && ty === R.typeIdx[ti]));
+        if (o.length){ const [v,ty] = o[0]; const A = S.appt;
+          const lab = v !== R.svcIdx && ty !== R.typeIdx[ti] ? `${A.svcs[v]} / ${A.types[ty]}` : (v !== R.svcIdx ? A.svcs[v] : A.types[ty]);
+          wrong.set(m, lab); res.wrongKinds.set(lab, (res.wrongKinds.get(lab) || 0) + 1); }
+      }
+      res.wrong += wrong.size;
       extra.forEach(m => { res.grid[t].extraCols.add(m); res.extraRows += cnt.get(m); if (!sun){ if (!res.extraTimes.has(m)) res.extraTimes.set(m, new Set()); res.extraTimes.get(m).add(day.d); } });
       dup.forEach(([m,c]) => { const o = res.dupTimes.get(m) || {max:0, days:new Set()}; o.max = Math.max(o.max, c); o.days.add(day.d); res.dupTimes.set(m, o); res.dupSlots++; });
-      res.grid[t].days.push({d:day.d, dow:day.dow, cnt, miss:new Set(miss), err, closed:!byType, sun});
+      res.grid[t].days.push({d:day.d, dow:day.dow, cnt, miss:new Set(miss), wrong, err, closed:!byType, sun});
       res.miss += miss.length; dayMiss += miss.length; res.err += err.length;
       if (miss.length || extra.length || dup.length || err.length)
-        res.issues.push({date:day.d, type:t, closed:!byType, sun, miss:miss.map(slot).join(", "),
+        res.issues.push({date:day.d, type:t, closed:!byType && !wrong.size, sun, wrongN:wrong.size, miss:miss.map(m => wrong.has(m) ? `${slot(m)} (สร้างไว้เป็น "${wrong.get(m)}")` : slot(m)).join(", "),
           extra:extra.map(slot).join(", "), dup:dup.map(([m,c]) => `${slot(m)} ×${c}`).join(", "), err:err.join(", ")});
     });
     if (sun && byType) res.sunDays.push(day.d);
@@ -404,10 +424,11 @@ function statusOf(r){
   const st = [r.miss ? "miss" : "ok"];
   if (r.extraTimes.size || r.sunDays.length) st.push("extra");
   if (r.dupSlots) st.push("dup");
+  if (r.wrong) st.push("wrong");
   if (r.err) st.push("err");
   return st;
 }
-const ST_LABEL = {ok:"ครบ", miss:"ขาด", extra:"มีเวลาเกิน", dup:"มีเวลาซ้ำ", err:"เวลาผิด", na:"ไม่มีข้อมูล"};
+const ST_LABEL = {ok:"ครบ", miss:"ขาด", wrong:"สร้างผิดประเภท", extra:"มีเวลาเกิน", dup:"มีเวลาซ้ำ", err:"เวลาผิด", na:"ไม่มีข้อมูล"};
 const ST_RANK = {na:0, miss:1, ok:2};
 const isClean = x => x.st.length === 1 && x.st[0] === "ok";
 
@@ -449,7 +470,7 @@ function render(){
   if (S.q){ const q = S.q.toLowerCase(); rows = rows.filter(x => x.name.toLowerCase().includes(q) || x.region.toLowerCase().includes(q)); }
   const cnt = k => rows.filter(x => x.st.includes(k)).length;
   const K = [["all","PS ทั้งหมด",rows.length,""],["ok","ครบตามมาตรฐาน",cnt("ok"),"ok"],["miss","มีช่องขาด",cnt("miss"),"miss"],["na","ไม่มีข้อมูล (ขาดทั้งหมด)",cnt("na"),"na"],
-             ["extra","มีเวลาเกินมาตรฐาน",cnt("extra"),"extra"],["dup","มีเวลาซ้ำ",cnt("dup"),"dup"],["err","เวลาใส่ผิด",cnt("err"),"err"]];
+             ["extra","มีเวลาเกินมาตรฐาน",cnt("extra"),"extra"],["dup","มีเวลาซ้ำ",cnt("dup"),"dup"],["wrong","สร้างผิดประเภท",cnt("wrong"),"wrong"],["err","เวลาใส่ผิด",cnt("err"),"err"]];
   $("kpis").innerHTML = K.map(([k,l,n,c]) => `<div class="kpi ${c} ${S.status===k?"sel":""}" data-st="${k}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
   if (S.status !== "all") rows = rows.filter(x => x.st.includes(S.status));
   $("stdLine").innerHTML = `มาตรฐาน (${esc(S.std.svc)}): ` + Object.entries(S.std.types).map(([t,a]) => `<b>${esc(t)}</b> ${a.join(", ")}`).join(" · ") +
@@ -486,6 +507,7 @@ function renderDetail(name){
     <div class="kpi miss"><div class="n">${r.closedDays.length}</div><div class="l">วันไม่เปิดรับนัด (จ–ส)</div></div>
     <div class="kpi extra"><div class="n">${r.extraTimes.size}</div><div class="l">เวลาเกินมาตรฐาน${r.sunDays.length ? ` · อาทิตย์ ${r.sunDays.length} วัน` : ""}</div></div>
     <div class="kpi dup"><div class="n">${r.dupSlots}</div><div class="l">ช่องที่มีเวลาซ้ำ</div></div>
+    ${r.wrong ? `<div class="kpi wrong"><div class="n">${r.wrong}</div><div class="l">สร้างผิดประเภท</div></div>` : ""}
     ${r.err ? `<div class="kpi err"><div class="n">${r.err}</div><div class="l">เวลาใส่ผิด</div></div>` : ""}</div>`;
   if (!r.hasData) h += `<div class="note"><b>ไม่พบการตั้งค่านัดหมาย "${esc(S.std.svc)}" ของ PS นี้</b> — นับเป็นขาดทุกช่อง ทุกวันจันทร์–เสาร์</div>`;
   if (r.closedDays.length && r.hasData) h += `<div class="note"><b>วันจันทร์–เสาร์ที่ไม่ได้เปิดรับนัด (${r.closedDays.length} วัน · นับขาดทุกช่อง):</b> ${r.closedDays.map(dateLabel).join(", ")}</div>`;
@@ -493,32 +515,42 @@ function renderDetail(name){
   if (r.sunDays.length) h += `<div class="note"><b class="extra-t">เปิดรับนัดวันอาทิตย์ (${r.sunDays.length} วัน):</b> ${r.sunDays.map(dateLabel).join(", ")}</div>`;
   if (r.dupSlots) h += `<div class="note"><b class="dup-t">เวลาซ้ำ:</b> ${esc(dupText(r, true))}</div>`;
   if (r.other) h += `<div class="note muted">มีช่วงเวลาของประเภทงานอื่นที่ไม่อยู่ในมาตรฐาน ${r.other} ช่อง (ไม่นำมาคิด)</div>`;
-  h += `<div class="legend"><span><i class="sw c-ok"></i>มีตามมาตรฐาน</span><span><i class="sw c-miss"></i>ขาด</span><span><i class="sw c-extra"></i>เวลาเกินมาตรฐาน / วันอาทิตย์</span><span><i class="sw c-dup"></i>เวลาซ้ำ (×จำนวน)</span><span><i class="sw" style="outline:2px solid var(--err)"></i>เวลาสิ้นสุดผิด</span></div>`;
-  for (const t of S.result.stdTypes){
-    const g = r.grid[t], ti = S.result.stdTypes.indexOf(t);
-    const allCols = [...S.result.exp[ti].map(m => [m,0]), ...[...g.extraCols].filter(m => !S.result.exp[ti].includes(m)).map(m => [m,1])].sort((a,b) => a[0]-b[0]);
-    h += `<h3>${esc(t)}</h3><div class="card scroll"><table class="grid"><thead><tr><th>วันที่</th>${allCols.map(([m,x]) => `<th class="${x?"x":""}">${hm(m)}${x?"<br>เกิน":""}</th>`).join("")}<th>สถานะ</th></tr></thead><tbody>`;
-    for (const d of g.days){
-      const cells = allCols.map(([m,x]) => {
-        const c = d.cnt.get(m) || 0, ec = d.err.some(e => e.startsWith(hm(m))) ? " c-err" : "";
-        if (d.sun || x){ if (!c) return `<td></td>`; return c > 1 ? `<td><span class="c c-dup${ec}">+×${c}</span></td>` : `<td><span class="c c-extra${ec}">+</span></td>`; }
-        if (!c) return `<td><span class="c c-miss">✗</span></td>`;
-        return c > 1 ? `<td><span class="c c-dup${ec}">×${c}</span></td>` : `<td><span class="c c-ok${ec}">✓</span></td>`;
-      }).join("");
-      const ex = [...d.cnt.keys()].some(m => d.sun || !S.result.exp[ti].includes(m)), dp = [...d.cnt.values()].some(c => c > 1);
-      const s = d.closed ? `<span class="badge b-miss">ไม่เปิดรับนัด</span>`
-        : (d.sun ? `<span class="badge b-extra">วันอาทิตย์</span>` : (d.miss.size ? `<span class="badge b-miss">ขาด ${d.miss.size}</span>` : `<span class="badge b-ok">ครบ</span>`))
-          + (ex && !d.sun ? `<span class="badge b-extra">เกิน</span>` : "") + (dp ? `<span class="badge b-dup">ซ้ำ</span>` : "") + (d.err.length ? `<span class="badge b-err">ผิด ${d.err.length}</span>` : "");
-      h += `<tr class="${d.dow===0?"wk":""}"><td class="d">${dateLabel(d.d)}</td>${cells}<td>${s}</td></tr>`;
-    }
-    h += `</tbody></table></div>`;
-  }
+  if (r.wrong) h += `<div class="note"><b class="wrong-t">สร้างเวลาไว้แล้วแต่ผิดประเภท ${r.wrong} ช่อง (นับเป็นขาด):</b> ${esc(wrongText(r))} — ต้องเป็น "${esc(S.std.svc)}" และประเภทตามมาตรฐาน</div>`;
+  h += LEGEND;
+  h += gridHTML(r);
   if (r.issues.length){
     h += `<h3>รายละเอียดรายวัน (${r.issues.length})</h3><div class="card scroll"><table><thead><tr><th>วันที่</th><th>ประเภท</th><th>ช่องที่ขาด</th><th>เวลาเกินมาตรฐาน</th><th>เวลาซ้ำ</th><th>เวลาผิด</th></tr></thead><tbody>` +
       r.issues.map(i => `<tr><td>${dateLabel(i.date)}${i.sun ? " (อาทิตย์)" : ""}</td><td>${esc(i.type)}</td><td class="miss-t">${i.closed ? "ไม่เปิดรับนัด — ขาดทุกช่อง" : esc(i.miss)}</td><td class="extra-t">${esc(i.extra)}</td><td class="dup-t">${esc(i.dup)}</td><td class="err-t">${esc(i.err)}</td></tr>`).join("") + `</tbody></table></div>`;
   }
   $("detail").innerHTML = h;
   window.scrollTo(0,0);
+}
+const wrongText = r => [...r.wrongKinds.entries()].sort((a,b) => b[1]-a[1]).map(([k,n]) => `"${k}" ${n} ช่อง`).join(", ");
+const LEGEND = `<div class="legend"><span><i class="sw c-ok"></i>มีตามมาตรฐาน</span><span><i class="sw c-miss"></i>ขาด</span><span><i class="sw c-wrong"></i>มีเวลานี้แต่สร้างผิดประเภท (นับเป็นขาด)</span><span><i class="sw c-extra"></i>เวลาเกินมาตรฐาน / วันอาทิตย์</span><span><i class="sw c-dup"></i>เวลาซ้ำ (×จำนวน)</span><span><i class="sw" style="outline:2px solid var(--err)"></i>เวลาสิ้นสุดผิด</span></div>`;
+function gridHTML(r, print){
+  let h = "";
+  for (const t of S.result.stdTypes){
+    const g = r.grid[t], ti = S.result.stdTypes.indexOf(t);
+    const allCols = [...S.result.exp[ti].map(m => [m,0]), ...[...g.extraCols].filter(m => !S.result.exp[ti].includes(m)).map(m => [m,1])].sort((a,b) => a[0]-b[0]);
+    h += print ? `<h4 style="margin:12px 0 4px">${esc(t)}</h4><table class="grid">` : `<h3>${esc(t)}</h3><div class="card scroll"><table class="grid">`;
+    h += `<thead><tr><th>วันที่</th>${allCols.map(([m,x]) => `<th class="${x?"x":""}">${hm(m)}${x?"<br>เกิน":""}</th>`).join("")}<th>สถานะ</th></tr></thead><tbody>`;
+    for (const d of g.days){
+      const cells = allCols.map(([m,x]) => {
+        const c = d.cnt.get(m) || 0, ec = d.err.some(e => e.startsWith(hm(m))) ? " c-err" : "";
+        if (d.sun || x){ if (!c) return `<td></td>`; return c > 1 ? `<td><span class="c c-dup${ec}">+×${c}</span></td>` : `<td><span class="c c-extra${ec}">+</span></td>`; }
+        if (!c) return d.wrong && d.wrong.has(m) ? `<td><span class="c c-wrong" title="มีเวลา ${hm(m)} แต่สร้างไว้เป็น ${esc(d.wrong.get(m))}">!</span></td>` : `<td><span class="c c-miss">✗</span></td>`;
+        return c > 1 ? `<td><span class="c c-dup${ec}">×${c}</span></td>` : `<td><span class="c c-ok${ec}">✓</span></td>`;
+      }).join("");
+      const ex = [...d.cnt.keys()].some(m => d.sun || !S.result.exp[ti].includes(m)), dp = [...d.cnt.values()].some(c => c > 1);
+      const wn = d.wrong ? d.wrong.size : 0;
+      const s = d.closed && !wn ? `<span class="badge b-miss">ไม่เปิดรับนัด</span>`
+        : (d.sun ? `<span class="badge b-extra">วันอาทิตย์</span>` : (d.miss.size ? `<span class="badge b-miss">ขาด ${d.miss.size}</span>` : `<span class="badge b-ok">ครบ</span>`))
+          + (wn ? `<span class="badge b-wrong">ผิดประเภท ${wn}</span>` : "") + (ex && !d.sun ? `<span class="badge b-extra">เกิน</span>` : "") + (dp ? `<span class="badge b-dup">ซ้ำ</span>` : "") + (d.err.length ? `<span class="badge b-err">ผิด ${d.err.length}</span>` : "");
+      h += `<tr class="${d.dow===0?"wk":""}"><td class="d">${dateLabel(d.d)}</td>${cells}<td>${s}</td></tr>`;
+    }
+    h += print ? `</tbody></table>` : `</tbody></table></div>`;
+  }
+  return h;
 }
 function backToList(){ S.detail = null; $("vDetail").classList.add("hide"); $("vList").classList.remove("hide"); }
 
@@ -535,7 +567,7 @@ function summaryRows(){
   const list = S.detail ? storeList().filter(x => x.name === S.detail) : S.visible;
   return list.map(x => ({"PS":x.name,"ภาค":x.region,"RSM":x.rsm,"สถานะ":x.st.map(s=>ST_LABEL[s]).join(", "),
     "วันทำงาน (จ–ส)":x.r.workDays,"วันที่ครบ":x.r.okDays,"วันที่ขาด":x.r.missDays,"ช่องขาด":x.r.miss,"วันไม่เปิดรับนัด":x.r.closedDays.length,
-    "เวลาเกินมาตรฐาน":extraText(x.r, true),"เปิดวันอาทิตย์ (วัน)":x.r.sunDays.length,"เวลาซ้ำ":dupText(x.r, true),"เวลาผิด":x.r.err}));
+    "เวลาเกินมาตรฐาน":extraText(x.r, true),"เปิดวันอาทิตย์ (วัน)":x.r.sunDays.length,"เวลาซ้ำ":dupText(x.r, true),"สร้างผิดประเภท":x.r.wrong,"เวลาผิด":x.r.err}));
 }
 
 let downloadsNS = null;
@@ -574,11 +606,13 @@ function reportHTML(x){
   h += `<div class="sum"><div><b style="color:var(--ok)">${r.okDays}/${r.workDays}</b>วันที่ครบ (จ–ส)</div><div><b style="color:var(--miss)">${r.miss}</b>ช่องที่ต้องสร้างเพิ่ม (${r.missDays} วัน)</div>${r.closedDays.length ? `<div><b style="color:var(--miss)">${r.closedDays.length}</b>วันไม่เปิดรับนัด</div>` : ""}</div>`;
   if (!r.hasData) h += `<div class="ok" style="color:var(--miss)">ไม่พบการตั้งค่าเวลานัดหมายในระบบ — กรุณาสร้างตารางเวลาตามมาตรฐานทุกวันจันทร์–เสาร์</div>`;
   else {
+    h += `<h4 style="margin:10px 0 2px">ตารางรายวัน</h4>` + LEGEND.replace('class="legend"', 'class="legend" style="font-size:10.5px;margin:4px 0"') + gridHTML(r, true);
     const missRows = r.issues.filter(i => i.miss);
     const closedSeen = new Set();
     if (!missRows.length) h += `<div class="ok">✓ ตารางเวลาครบตามมาตรฐานทุกวันจันทร์–เสาร์</div>`;
     else {
-      h += `<h4 style="margin:10px 0 2px">ช่องที่ขาด — กรุณาสร้างเพิ่ม</h4><table><thead><tr><th style="width:90px">วันที่</th><th style="width:130px">ประเภท</th><th>ช่องเวลาที่ขาด</th><th class="chk">สร้างแล้ว</th></tr></thead><tbody>`;
+      if (r.wrong) h += `<div class="stdbox" style="border-color:#ca8a04"><b style="color:#a16207">หมายเหตุ:</b> มี ${r.wrong} ช่องที่สร้างเวลาไว้แล้วแต่ตั้งประเภทไม่ตรงมาตรฐาน (${esc(wrongText(r))}) — กรุณาแก้ประเภทการนัดหมายให้ถูกต้อง</div>`;
+      h += `<h4 style="margin:10px 0 2px">ช่องที่ขาด — กรุณาสร้างเพิ่ม / แก้ประเภท</h4><table><thead><tr><th style="width:90px">วันที่</th><th style="width:130px">ประเภท</th><th>ช่องเวลาที่ขาด</th><th class="chk">สร้างแล้ว</th></tr></thead><tbody>`;
       for (const i of missRows){
         if (i.closed){ if (closedSeen.has(i.date)) continue; closedSeen.add(i.date);
           h += `<tr><td>${dateLabel(i.date)}</td><td>ทุกประเภท</td><td style="color:var(--miss);font-weight:600">ไม่ได้เปิดรับนัด — กรุณาสร้างให้ครบทุกช่อง</td><td class="chk">☐</td></tr>`; continue; }
